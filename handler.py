@@ -1,36 +1,71 @@
-FROM python:3.12-slim
+import runpod
+import base64
+import tempfile
+from pathlib import Path
 
-# System dependencies pour Docling et OpenCV
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    g++ \
-    libffi-dev \
-    fonts-dejavu-core \
-    libxcb1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    libgl1 \
-    && rm -rf /var/lib/apt/lists/*
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
-WORKDIR /app
+# Chargé une seule fois au démarrage du worker
+pipeline_options = PdfPipelineOptions(do_ocr=False)
+converter = DocumentConverter(
+    format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)}
+)
 
-# Install uv
-RUN pip install --no-cache-dir uv
+def handler(job):
+    inputs = job["input"]
 
-# Copy dependency files pour le cache Docker
-COPY pyproject.toml uv.lock ./
+    if "pdf_base64" not in inputs:
+        return {"error": "Champ 'pdf_base64' manquant", "status": "failed"}
 
-# Install dependencies avec uv
-RUN uv sync --frozen --no-install-project
+    # Décoder le PDF
+    pdf_bytes = base64.b64decode(inputs["pdf_base64"])
+    tmp_path = None
 
-# Pré-charger les modèles Docling dans l'image (évite cold start)
-RUN .venv/bin/python -c "from docling.document_converter import DocumentConverter; DocumentConverter()"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes)
+            tmp_path = Path(f.name)
 
-# Copy le code
-COPY handler.py .
+        # Conversion Docling (la partie lourde)
+        result = converter.convert(str(tmp_path))
+        doc = result.document
 
-# RunPod handler via le venv uv
-CMD [".venv/bin/python", "handler.py"]
+        # Sérialiser les items bruts pour ton code local
+        items = []
+        for idx, (element, level) in enumerate(doc.iterate_items()):
+            prov_data = None
+            if element.prov:
+                prov = element.prov[0]
+                b = prov.bbox
+                if hasattr(b, 'l') and hasattr(b, 'r'):
+                    bbox_raw = [b.l, b.t, b.r, b.b]
+                elif hasattr(b, 'to_tuple'):
+                    bbox_raw = list(b.to_tuple())
+                else:
+                    bbox_raw = None
+
+                prov_data = {
+                    "page_no": prov.page_no,
+                    "bbox": bbox_raw
+                }
+
+            items.append({
+                "idx": idx,
+                "level": level,
+                "label": str(element.label),
+                "text": getattr(element, "text", "") or "",
+                "type": type(element).__name__,
+                "prov": prov_data,
+            })
+
+        return {"items": items, "status": "success"}
+
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink()
+
+runpod.serverless.start({"handler": handler})

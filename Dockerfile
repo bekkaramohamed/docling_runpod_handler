@@ -26,8 +26,6 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies avec uv
 RUN uv sync --frozen --no-install-project
 
-# Pré-charger les modèles Docling dans l'image (évite cold start)
-RUN .venv/bin/python -c "from docling.document_converter import DocumentConverter; DocumentConverter()"
 
 # Copy le code
 COPY handler.py .
