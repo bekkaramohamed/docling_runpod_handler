@@ -5,6 +5,7 @@ from pathlib import Path
 
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling_core.types.doc import TableItem
 
 # Chargé une seule fois au démarrage du worker
 pipeline_options = PdfPipelineOptions(do_ocr=False)
@@ -50,11 +51,18 @@ def handler(job):
                     "bbox": bbox_raw
                 }
 
+            # TableItem.text est vide — il faut passer par export_to_markdown(doc=doc)
+            # pour récupérer le contenu des cellules (comportement VPS Feb 13).
+            if isinstance(element, TableItem):
+                text = element.export_to_markdown(doc=doc) if hasattr(element, "export_to_markdown") else ""
+            else:
+                text = getattr(element, "text", "") or ""
+
             items.append({
                 "idx": idx,
                 "level": level,
                 "label": str(element.label),
-                "text": getattr(element, "text", "") or "",
+                "text": text,
                 "type": type(element).__name__,
                 "prov": prov_data,
             })
